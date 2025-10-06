@@ -1,5 +1,4 @@
 /target/
-/lib
 /.idea
 
-!lib/posts.csv
+lib/posts-2025-09-27.csv
