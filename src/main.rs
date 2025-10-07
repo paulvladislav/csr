@@ -80,6 +80,8 @@ impl Tags {
     pub fn len(&self) -> usize {
         self.vec.len()
     }
+
+
 }
 
 #[derive(Debug)]
@@ -370,7 +372,7 @@ fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
 }
 
 fn main() {
-    let result = read_csv("lib/posts_egs.csv");
+    let result = read_csv("lib/posts.csv");
     match result {
         Err(e) => println!("Error: {:?}", e),
         Ok((_, co_count_matrix)) => {
@@ -380,4 +382,5 @@ fn main() {
             println!("{:?}", co_count_matrix.size());
         }
     }
+
 }
