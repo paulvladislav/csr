@@ -1,8 +1,11 @@
-use std::arch::x86_64::_mm_round_ss;
 use csv::{Position, ReaderBuilder};
-use std::error::Error;
-use std::collections::HashMap;
 use itertools::Itertools;
+use rustc_hash::FxHashMap;
+use std::arch::x86_64::_mm_round_ss;
+use std::collections::HashMap;
+use std::error::Error;
+use std::rc::Rc;
+use std::time::Instant;
 
 #[derive(Debug)]
 struct TagData {
@@ -12,31 +15,33 @@ struct TagData {
 
 #[derive(Debug)]
 struct Tags {
-    tag_set: HashMap<Box<str>, TagData>,
-    vec: Vec<Box<str>>
+    tag_set: FxHashMap<Rc<str>, TagData>,
+    vec: Vec<Rc<str>>,
 }
 
 impl Tags {
     pub fn new() -> Tags {
         Tags {
-            tag_set: HashMap::new(),
+            tag_set: FxHashMap::default(),
             vec: Vec::new(),
         }
     }
 
-    pub fn add_or_increment(& mut self, tag: &str) {
-        if (self.tag_set.contains_key(tag)) {
-            self.tag_set.get_mut(tag).unwrap().count += 1;
+    pub fn add_or_increment(&mut self, tag: &str) -> u32 {
+        if let Some(tag_data) = self.tag_set.get_mut(tag) {
+            tag_data.count += 1;
+            tag_data.idx
         } else {
-            let tag: Box<str> = Box::from(tag);
-            self.vec.push(tag.clone());
+            let tag: Rc<str> = Rc::from(tag);
+            self.vec.push(Rc::clone(&tag));
             let idx = self.vec.len() as u32 - 1;
             let count = 1;
-            self.tag_set.insert(tag, TagData { idx, count });
+            self.tag_set.insert(Rc::clone(&tag), TagData { idx, count });
+            idx
         }
     }
 
-    pub fn get_idx(& self, tag: &str) -> Option<u32> {
+    pub fn get_idx(&self, tag: &str) -> Option<u32> {
         if (self.tag_set.contains_key(tag)) {
             Some(self.tag_set[tag].idx)
         } else {
@@ -44,11 +49,10 @@ impl Tags {
         }
     }
 
-    pub fn get_name(& self, idx: u32) -> Option<&str> {
+    pub fn get_name(&self, idx: u32) -> Option<&str> {
         if (idx < self.vec.len() as u32 - 1) {
             Some(&self.vec[idx as usize])
-        }
-        else {
+        } else {
             None
         }
     }
@@ -56,28 +60,25 @@ impl Tags {
     pub fn get_count(&self, name: &str) -> Option<u32> {
         if (self.tag_set.contains_key(name)) {
             Some(self.tag_set[name].count)
-        }
-        else {
+        } else {
             None
         }
     }
 
-    pub fn get_count_idx(& self, idx: u32) -> Option<u32> {
+    pub fn get_count_idx(&self, idx: u32) -> Option<u32> {
         let name = self.get_name(idx);
         match name {
             Some(name) => {
                 let count = self.get_count(name);
                 Some(count.unwrap())
             }
-            None => None
+            None => None,
         }
     }
 
     pub fn len(&self) -> usize {
         self.vec.len()
     }
-
-
 }
 
 #[derive(Debug)]
@@ -91,9 +92,13 @@ struct CSR {
 }
 
 impl CSR {
-    pub fn from_triplets(values: HashMap<(usize, usize), f32>, n_rows: usize, n_cols: usize) -> CSR {
+    pub fn from_fxhash(
+        values: &FxHashMap<(usize, usize), f32>,
+        n_rows: usize,
+        n_cols: usize,
+    ) -> CSR {
         let mut rows: Vec<Vec<(usize, f32)>> = vec![vec![]; n_rows];
-        for (&(r, c), &v) in &values {
+        for (&(r, c), &v) in values {
             rows[r].push(((c, v)));
         }
         for row in rows.iter_mut() {
@@ -121,7 +126,7 @@ impl CSR {
             n_nz,
             row_ptr,
             col_idx,
-            val
+            val,
         }
     }
 
@@ -140,58 +145,59 @@ impl CSR {
     }
 
     pub fn size(&self) -> usize {
-        (self.n_rows + 1) * size_of::<usize>() +
-            self.n_nz * size_of::<usize>() +
-            self.n_nz * size_of::<f32>() +
-            size_of::<Vec<f32>>() + size_of::<Vec<usize>>() * 2 +
-            size_of::<f32>() + size_of::<usize>() * 2
+        (self.n_rows + 1) * size_of::<usize>()
+            + self.n_nz * size_of::<usize>()
+            + self.n_nz * size_of::<u32>()
+            + size_of::<Vec<f32>>()
+            + size_of::<Vec<usize>>() * 2
+            + size_of::<f32>()
+            + size_of::<usize>() * 2
     }
 }
 
 fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
     use serde::Deserialize;
-    #[derive(Debug,Deserialize)]
+    #[derive(Debug, Deserialize)]
     struct Row {
         tag_string: String,
     }
 
-    let mut reader = ReaderBuilder::new()
-        .has_headers(true)
-        .from_path(path)?;
+    let mut reader = ReaderBuilder::new().has_headers(true).from_path(path)?;
 
     let mut tags = Tags::new();
-    let mut co_counts: HashMap<(usize, usize), f32> = HashMap::new();
+    let mut co_counts: FxHashMap<(usize, usize), f32> = FxHashMap::default();
 
-    let mut i = 0;
+    let read_start = Instant::now();
+
+    let mut n_posts = 0;
     for line in reader.deserialize() {
         let row: Row = line?;
-        let post_tags: Vec<&str> = row.tag_string
+        let post_tags_idxs: Vec<u32> = row
+            .tag_string
             .split_whitespace()
+            .map(|tag| tags.add_or_increment(tag))
             .collect();
-        for tag in post_tags.iter() {
-            tags.add_or_increment(tag);
+
+        for &lhs in post_tags_idxs.iter() {
+            for &rhs in post_tags_idxs.iter() {
+                if lhs != rhs {
+                    *co_counts.entry((lhs as usize, rhs as usize)).or_insert(0.0) += 1.0;
+                }
+            }
         }
-        let post_tags_idxs: Vec<u32> = post_tags.iter()
-            .map(|&s| tags.get_idx(s).unwrap())
-            .collect();
-        let combinations: Vec<(&u32, &u32)> = post_tags_idxs.iter()
-            .cartesian_product(post_tags_idxs.iter())
-            .filter(|(a, b)| a != b)
-            .collect();
-        for combo in combinations {
-            let lhs = *combo.0 as usize;
-            let rhs = *combo.1 as usize;
-            *co_counts.entry((lhs, rhs)).or_insert(0.0) += 1.0;
-        }
-        i += 1;
+
+        n_posts += 1;
     }
 
+    let elapsed = read_start.elapsed();
+    println!("reading took {:?}", elapsed);
+
     println!("mammal: {:#?}", tags.get_idx("mammal").unwrap());
-    println!("cat: {:#?}", tags.get_idx("4_legged").unwrap());
+    println!("cat: {:#?}", tags.get_idx("cat").unwrap());
 
-    let co_count_matrix = CSR::from_triplets(co_counts, tags.len(), tags.len());
+    let co_count_matrix = CSR::from_fxhash(&co_counts, tags.len(), tags.len());
 
-    Ok( (tags, co_count_matrix) )
+    Ok((tags, co_count_matrix))
 }
 
 fn main() {
@@ -199,10 +205,9 @@ fn main() {
     match result {
         Err(e) => println!("Error: {:?}", e),
         Ok((_, co_count_matrix)) => {
-            println!("{:?}", co_count_matrix.value(2, 3));
+            println!("{:?}", co_count_matrix.value(2, 0));
             println!("{:?}", co_count_matrix.n_nz);
             println!("{:?}", co_count_matrix.size());
         }
     }
-
 }
