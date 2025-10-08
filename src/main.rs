@@ -1,11 +1,14 @@
+use std::string::String;
 use csv::{Position, ReaderBuilder};
 use itertools::Itertools;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use std::arch::x86_64::_mm_round_ss;
 use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
 use std::time::Instant;
+use serde::__private228::de::Content::String as SerdeString;
+use rayon::prelude::*;
 
 #[derive(Debug)]
 struct TagData {
@@ -170,6 +173,10 @@ fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
     let read_start = Instant::now();
 
     let mut n_posts = 0;
+
+    const CHUNK_SIZE: usize = 1;
+    let mut chunks: Vec<Vec<Vec<u32>>> = Vec::new();
+    let mut current_chunk: Vec<Vec<u32>> = Vec::with_capacity(CHUNK_SIZE);
     for line in reader.deserialize() {
         let row: Row = line?;
         let post_tags_idxs: Vec<u32> = row
@@ -178,16 +185,53 @@ fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
             .map(|tag| tags.add_or_increment(tag))
             .collect();
 
-        for &lhs in post_tags_idxs.iter() {
-            for &rhs in post_tags_idxs.iter() {
-                if lhs != rhs {
-                    *co_counts.entry((lhs as usize, rhs as usize)).or_insert(0.0) += 1.0;
-                }
-            }
+        current_chunk.push(post_tags_idxs);
+        if current_chunk.len() >= CHUNK_SIZE {
+            chunks.push(current_chunk);
+            current_chunk = Vec::with_capacity(CHUNK_SIZE);
         }
+
+        // for i in 0..post_tags_idxs.len() {
+        //     for j in (i+1)..post_tags_idxs.len() {
+        //         let a = post_tags_idxs[i] as usize;
+        //         let b = post_tags_idxs[j] as usize;
+        //         *co_counts.entry((a, b)).or_insert(0.0) += 1.0;
+        //         *co_counts.entry((b, a)).or_insert(0.0) += 1.0;
+        //     }
+        // }
 
         n_posts += 1;
     }
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
+
+    let co_counts: FxHashMap<(usize, usize), f32> = chunks
+        .into_par_iter()
+        .map(|chunk: Vec<Vec<u32>>| {
+            let mut chunk_co_counts: FxHashMap<(usize, usize), f32>= FxHashMap::default();
+            for post_tag_idxs in chunk {
+                let n_tag_idxs = post_tag_idxs.len();
+                for i in 0..n_tag_idxs {
+                    for j in (i+1)..n_tag_idxs {
+                        let a = post_tag_idxs[i] as usize;
+                        let b = post_tag_idxs[j] as usize;
+                        *chunk_co_counts.entry((a,b)).or_insert(0.0) += 1.0;
+                        *chunk_co_counts.entry((b,a)).or_insert(0.0) += 1.0;
+                    }
+                }
+            }
+            chunk_co_counts
+        })
+        .reduce(
+            || FxHashMap::default(),
+            |mut acc, current| {
+                for (k, v) in current {
+                    *acc.entry(k).or_insert(0.0) += v;
+                }
+                acc
+            }
+        );
 
     let elapsed = read_start.elapsed();
     println!("reading took {:?}", elapsed);
@@ -206,6 +250,7 @@ fn main() {
         Err(e) => println!("Error: {:?}", e),
         Ok((_, co_count_matrix)) => {
             println!("{:?}", co_count_matrix.value(2, 0));
+            println!("{:?}", co_count_matrix.value(0, 2));
             println!("{:?}", co_count_matrix.n_nz);
             println!("{:?}", co_count_matrix.size());
         }
