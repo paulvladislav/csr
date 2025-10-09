@@ -1,14 +1,12 @@
-use std::string::String;
-use csv::{Position, ReaderBuilder};
-use itertools::Itertools;
-use rustc_hash::{FxBuildHasher, FxHashMap};
-use std::arch::x86_64::_mm_round_ss;
-use std::collections::HashMap;
+use csv::ReaderBuilder;
+use rustc_hash::FxHashMap;
 use std::error::Error;
 use std::rc::Rc;
+use std::string::String;
 use std::time::Instant;
-use serde::__private228::de::Content::String as SerdeString;
-use rayon::prelude::*;
+use std::thread;
+use itertools::Itertools;
+use std::ops::Add;
 
 #[derive(Debug)]
 struct TagData {
@@ -95,14 +93,21 @@ struct CSR {
 }
 
 impl CSR {
-    pub fn from_fxhash(
-        values: &FxHashMap<(usize, usize), f32>,
-        n_rows: usize,
-        n_cols: usize,
-    ) -> CSR {
+    pub fn new(n_rows: usize, n_cols: usize) -> CSR {
+        CSR {
+            n_rows,
+            n_cols,
+            n_nz: 0,
+            row_ptr: vec![0; n_rows + 1],
+            col_idx: Vec::new(),
+            val: Vec::new(),
+        }
+    }
+
+    pub fn from_triplet(triplet: &Vec<(usize, usize, f32)>, n_rows: usize, n_cols: usize) -> CSR {
         let mut rows: Vec<Vec<(usize, f32)>> = vec![vec![]; n_rows];
-        for (&(r, c), &v) in values {
-            rows[r].push(((c, v)));
+        for (r, c, v) in triplet {
+            rows[*r].push((*c, *v));
         }
         for row in rows.iter_mut() {
             row.sort_by_key(|(c, _)| *c);
@@ -115,6 +120,52 @@ impl CSR {
 
         row_ptr.push(0);
         for row in &rows {
+            if row.is_empty() {
+                row_ptr.push(*row_ptr.last().unwrap());
+                continue;
+            }
+            for &(c, v) in row {
+                col_idx.push(c);
+                val.push(v);
+                n_nz += 1;
+            }
+            row_ptr.push(col_idx.len());
+        }
+
+        CSR {
+            n_rows,
+            n_cols,
+            n_nz,
+            row_ptr,
+            col_idx,
+            val,
+        }
+    }
+
+    pub fn from_fxhash(
+        fxhash: &FxHashMap<(usize, usize), f32>,
+        n_rows: usize,
+        n_cols: usize,
+    ) -> CSR {
+        let mut rows: Vec<Vec<(usize, f32)>> = vec![vec![]; n_rows];
+        for (&(r, c), &v) in fxhash {
+            rows[r].push((c, v));
+        }
+        for row in rows.iter_mut() {
+            row.sort_by_key(|(c, _)| *c);
+        }
+
+        let mut row_ptr: Vec<usize> = Vec::with_capacity(n_rows + 1);
+        let mut col_idx: Vec<usize> = Vec::new();
+        let mut val: Vec<f32> = Vec::new();
+        let mut n_nz = 0;
+
+        row_ptr.push(0);
+        for row in &rows {
+            if row.is_empty() {
+                row_ptr.push(*row_ptr.last().unwrap());
+                continue;
+            }
             for &(c, v) in row {
                 col_idx.push(c);
                 val.push(v);
@@ -134,7 +185,7 @@ impl CSR {
     }
 
     pub fn value(&self, row: usize, col: usize) -> Option<f32> {
-        if (row > self.n_rows || col > self.n_cols) {
+        if row > self.n_rows || col > self.n_cols {
             return None;
         }
         let row_start = self.row_ptr[row];
@@ -147,6 +198,17 @@ impl CSR {
         Some(0.0)
     }
 
+    pub fn insert(&mut self, row: usize, col: usize, val: f32) {
+        if row > self.n_rows || col > self.n_cols {
+            return;
+        }
+        let row_start = self.row_ptr[row];
+        let row_end = self.row_ptr[row + 1];
+        if row_start == row_end {
+            self.row_ptr[row] = row;
+        }
+    }
+
     pub fn size(&self) -> usize {
         (self.n_rows + 1) * size_of::<usize>()
             + self.n_nz * size_of::<usize>()
@@ -155,6 +217,85 @@ impl CSR {
             + size_of::<Vec<usize>>() * 2
             + size_of::<f32>()
             + size_of::<usize>() * 2
+    }
+
+    pub fn add_in_place(&mut self, other: &CSR) -> Result<(), Box<dyn Error>> {
+        let res = (& *self + other)?;
+        self.n_nz = res.n_nz;
+        self.row_ptr = res.row_ptr;
+        self.col_idx = res.col_idx;
+        self.val = res.val;
+
+        Ok(())
+    }
+}
+
+impl Add for &CSR {
+    type Output = Result<CSR, Box<dyn Error>>;
+
+    fn add(self, other: &CSR) -> Self::Output {
+        if self.n_rows != other.n_rows || self.n_cols != other.n_cols {
+            return Err("Matrices are not the same size".into());
+        }
+
+        let mut row_ptr = Vec::with_capacity(other.n_rows + 1);
+        let mut col_idx= Vec::new();
+        let mut val = Vec::new();
+
+        row_ptr.push(0);
+        for i in 0..self.n_rows {
+            let lhs_row_start = self.row_ptr[i];
+            let lhs_row_end = self.row_ptr[i + 1];
+            let rhs_row_start = other.row_ptr[i];
+            let rhs_row_end = other.row_ptr[i + 1];
+
+            let mut lhs_i = lhs_row_start;
+            let mut rhs_i = rhs_row_start;
+            while lhs_i < lhs_row_end || rhs_i < rhs_row_end {
+                if lhs_i == lhs_row_end {
+                    col_idx.push(other.col_idx[rhs_i]);
+                    val.push(other.val[rhs_i]);
+                    rhs_i += 1;
+                }
+                else if rhs_i == rhs_row_end {
+                    col_idx.push(self.col_idx[lhs_i]);
+                    val.push(self.val[lhs_i]);
+                    lhs_i += 1;
+                }
+                else {
+                    let lhs_col = self.col_idx[lhs_i];
+                    let rhs_col = other.col_idx[rhs_i];
+
+                    if lhs_col == rhs_col {
+                        val.push(self.val[lhs_i] + other.val[rhs_i]);
+                        col_idx.push(lhs_col);
+                        lhs_i += 1;
+                        rhs_i += 1;
+                    }
+                    else if lhs_col < rhs_col {
+                        val.push(self.val[lhs_i]);
+                        col_idx.push(lhs_col);
+                        lhs_i += 1;
+                    }
+                    else if lhs_col > rhs_col {
+                        val.push(other.val[rhs_i]);
+                        col_idx.push(rhs_col);
+                        rhs_i += 1;
+                    }
+
+                }
+            }
+            row_ptr.push(val.len());
+        }
+
+        Ok(CSR {
+            n_rows: self.n_rows,
+            n_cols: self.n_cols,
+            n_nz: val.len(),
+            row_ptr,
+            col_idx,
+            val
+        })
     }
 }
 
@@ -168,78 +309,62 @@ fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
     let mut reader = ReaderBuilder::new().has_headers(true).from_path(path)?;
 
     let mut tags = Tags::new();
-    let mut co_counts: FxHashMap<(usize, usize), f32> = FxHashMap::default();
+    // let mut co_counts: FxHashMap<(usize, usize), f32> = FxHashMap::default();
 
     let read_start = Instant::now();
 
     let mut n_posts = 0;
-
-    const CHUNK_SIZE: usize = 1;
-    let mut chunks: Vec<Vec<Vec<u32>>> = Vec::new();
-    let mut current_chunk: Vec<Vec<u32>> = Vec::with_capacity(CHUNK_SIZE);
+    let mut posts_tag_idxs: Vec<Vec<u32>> = Vec::new();
     for line in reader.deserialize() {
         let row: Row = line?;
-        let post_tags_idxs: Vec<u32> = row
+        let tag_idxs: Vec<u32> = row
             .tag_string
             .split_whitespace()
             .map(|tag| tags.add_or_increment(tag))
             .collect();
 
-        current_chunk.push(post_tags_idxs);
-        if current_chunk.len() >= CHUNK_SIZE {
-            chunks.push(current_chunk);
-            current_chunk = Vec::with_capacity(CHUNK_SIZE);
-        }
-
-        // for i in 0..post_tags_idxs.len() {
-        //     for j in (i+1)..post_tags_idxs.len() {
-        //         let a = post_tags_idxs[i] as usize;
-        //         let b = post_tags_idxs[j] as usize;
-        //         *co_counts.entry((a, b)).or_insert(0.0) += 1.0;
-        //         *co_counts.entry((b, a)).or_insert(0.0) += 1.0;
-        //     }
-        // }
+        posts_tag_idxs.push(tag_idxs);
 
         n_posts += 1;
     }
-    if !current_chunk.is_empty() {
-        chunks.push(current_chunk);
-    }
 
-    let co_counts: FxHashMap<(usize, usize), f32> = chunks
-        .into_par_iter()
-        .map(|chunk: Vec<Vec<u32>>| {
-            let mut chunk_co_counts: FxHashMap<(usize, usize), f32>= FxHashMap::default();
-            for post_tag_idxs in chunk {
-                let n_tag_idxs = post_tag_idxs.len();
-                for i in 0..n_tag_idxs {
-                    for j in (i+1)..n_tag_idxs {
-                        let a = post_tag_idxs[i] as usize;
-                        let b = post_tag_idxs[j] as usize;
-                        *chunk_co_counts.entry((a,b)).or_insert(0.0) += 1.0;
-                        *chunk_co_counts.entry((b,a)).or_insert(0.0) += 1.0;
+    let n_tags = tags.len();
+    let mut handles = Vec::new();
+    for chunk in posts_tag_idxs.chunks((n_posts / 8) + 1) {
+        let chunk = chunk.to_vec();
+        let handle = thread::spawn( move || {
+            let mut co_counts: FxHashMap<(usize, usize), f32> = FxHashMap::default();
+
+            for post_tag_idx in chunk {
+
+                for i in 0..post_tag_idx.len() {
+                    for j in (i+1)..post_tag_idx.len() {
+                        let a = post_tag_idx[i] as usize;
+                        let b = post_tag_idx[j] as usize;
+                        *co_counts.entry((a, b)).or_insert(0.0) += 1.0;
+                        *co_counts.entry((b, a)).or_insert(0.0) += 1.0;
                     }
                 }
             }
-            chunk_co_counts
-        })
-        .reduce(
-            || FxHashMap::default(),
-            |mut acc, current| {
-                for (k, v) in current {
-                    *acc.entry(k).or_insert(0.0) += v;
-                }
-                acc
-            }
-        );
+
+            let local_co_count_matrix = CSR::from_fxhash(&co_counts, n_tags, n_tags);
+            local_co_count_matrix
+        });
+        handles.push(handle);
+    }
+
+    let mut co_count_matrix = CSR::new(n_tags, n_tags);
+    for (i, handle) in handles.into_iter().enumerate() {
+        let slice = handle.join().unwrap();
+        co_count_matrix.add_in_place(&slice)?;
+    }
+
 
     let elapsed = read_start.elapsed();
     println!("reading took {:?}", elapsed);
 
     println!("mammal: {:#?}", tags.get_idx("mammal").unwrap());
     println!("cat: {:#?}", tags.get_idx("cat").unwrap());
-
-    let co_count_matrix = CSR::from_fxhash(&co_counts, tags.len(), tags.len());
 
     Ok((tags, co_count_matrix))
 }
