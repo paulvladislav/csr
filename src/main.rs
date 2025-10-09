@@ -1,12 +1,15 @@
 use csv::ReaderBuilder;
+use itertools::Itertools;
 use rustc_hash::FxHashMap;
 use std::error::Error;
+use std::ops::Add;
 use std::rc::Rc;
 use std::string::String;
-use std::time::Instant;
 use std::thread;
-use itertools::Itertools;
-use std::ops::Add;
+use std::time::Instant;
+
+use csr_matrix::CSR;
+use log::log;
 
 #[derive(Debug)]
 struct TagData {
@@ -80,228 +83,11 @@ impl Tags {
     pub fn len(&self) -> usize {
         self.vec.len()
     }
-
-
 }
 
-#[derive(Debug)]
-struct CSR {
-    n_rows: usize,
-    n_cols: usize,
-    n_nz: usize,
-    row_ptr: Vec<usize>,
-    col_idx: Vec<usize>,
-    val: Vec<f32>,
-}
+fn read_csv(path: &str) -> Result<(usize, Tags, CSR), Box<dyn Error>> {
+    const N_CHUNCK: usize = 8;
 
-impl CSR {
-    pub fn new(n_rows: usize, n_cols: usize) -> CSR {
-        CSR {
-            n_rows,
-            n_cols,
-            n_nz: 0,
-            row_ptr: vec![0; n_rows + 1],
-            col_idx: Vec::new(),
-            val: Vec::new(),
-        }
-    }
-
-    pub fn from_triplet(triplet: &Vec<(usize, usize, f32)>, n_rows: usize, n_cols: usize) -> CSR {
-        let mut rows: Vec<Vec<(usize, f32)>> = vec![vec![]; n_rows];
-        for (r, c, v) in triplet {
-            rows[*r].push((*c, *v));
-        }
-        for row in rows.iter_mut() {
-            row.sort_by_key(|(c, _)| *c);
-        }
-
-        let mut row_ptr: Vec<usize> = Vec::with_capacity(n_rows + 1);
-        let mut col_idx: Vec<usize> = Vec::new();
-        let mut val: Vec<f32> = Vec::new();
-        let mut n_nz = 0;
-
-        row_ptr.push(0);
-        for row in &rows {
-            if row.is_empty() {
-                row_ptr.push(*row_ptr.last().unwrap());
-                continue;
-            }
-            for &(c, v) in row {
-                col_idx.push(c);
-                val.push(v);
-                n_nz += 1;
-            }
-            row_ptr.push(col_idx.len());
-        }
-
-        CSR {
-            n_rows,
-            n_cols,
-            n_nz,
-            row_ptr,
-            col_idx,
-            val,
-        }
-    }
-
-    pub fn from_fxhash(
-        fxhash: &FxHashMap<(usize, usize), f32>,
-        n_rows: usize,
-        n_cols: usize,
-    ) -> CSR {
-        let mut rows: Vec<Vec<(usize, f32)>> = vec![vec![]; n_rows];
-        for (&(r, c), &v) in fxhash {
-            rows[r].push((c, v));
-        }
-        for row in rows.iter_mut() {
-            row.sort_by_key(|(c, _)| *c);
-        }
-
-        let mut row_ptr: Vec<usize> = Vec::with_capacity(n_rows + 1);
-        let mut col_idx: Vec<usize> = Vec::new();
-        let mut val: Vec<f32> = Vec::new();
-        let mut n_nz = 0;
-
-        row_ptr.push(0);
-        for row in &rows {
-            if row.is_empty() {
-                row_ptr.push(*row_ptr.last().unwrap());
-                continue;
-            }
-            for &(c, v) in row {
-                col_idx.push(c);
-                val.push(v);
-                n_nz += 1;
-            }
-            row_ptr.push(col_idx.len());
-        }
-
-        CSR {
-            n_rows,
-            n_cols,
-            n_nz,
-            row_ptr,
-            col_idx,
-            val,
-        }
-    }
-
-    pub fn value(&self, row: usize, col: usize) -> Option<f32> {
-        if row > self.n_rows || col > self.n_cols {
-            return None;
-        }
-        let row_start = self.row_ptr[row];
-        let row_end = self.row_ptr[row + 1];
-        for i in row_start..row_end {
-            if self.col_idx[i] == col {
-                return Some(self.val[i].clone());
-            }
-        }
-        Some(0.0)
-    }
-
-    pub fn insert(&mut self, row: usize, col: usize, val: f32) {
-        if row > self.n_rows || col > self.n_cols {
-            return;
-        }
-        let row_start = self.row_ptr[row];
-        let row_end = self.row_ptr[row + 1];
-        if row_start == row_end {
-            self.row_ptr[row] = row;
-        }
-    }
-
-    pub fn size(&self) -> usize {
-        (self.n_rows + 1) * size_of::<usize>()
-            + self.n_nz * size_of::<usize>()
-            + self.n_nz * size_of::<u32>()
-            + size_of::<Vec<f32>>()
-            + size_of::<Vec<usize>>() * 2
-            + size_of::<f32>()
-            + size_of::<usize>() * 2
-    }
-
-    pub fn add_in_place(&mut self, other: &CSR) -> Result<(), Box<dyn Error>> {
-        let res = (& *self + other)?;
-        self.n_nz = res.n_nz;
-        self.row_ptr = res.row_ptr;
-        self.col_idx = res.col_idx;
-        self.val = res.val;
-
-        Ok(())
-    }
-}
-
-impl Add for &CSR {
-    type Output = Result<CSR, Box<dyn Error>>;
-
-    fn add(self, other: &CSR) -> Self::Output {
-        if self.n_rows != other.n_rows || self.n_cols != other.n_cols {
-            return Err("Matrices are not the same size".into());
-        }
-
-        let mut row_ptr = Vec::with_capacity(other.n_rows + 1);
-        let mut col_idx= Vec::new();
-        let mut val = Vec::new();
-
-        row_ptr.push(0);
-        for i in 0..self.n_rows {
-            let lhs_row_start = self.row_ptr[i];
-            let lhs_row_end = self.row_ptr[i + 1];
-            let rhs_row_start = other.row_ptr[i];
-            let rhs_row_end = other.row_ptr[i + 1];
-
-            let mut lhs_i = lhs_row_start;
-            let mut rhs_i = rhs_row_start;
-            while lhs_i < lhs_row_end || rhs_i < rhs_row_end {
-                if lhs_i == lhs_row_end {
-                    col_idx.push(other.col_idx[rhs_i]);
-                    val.push(other.val[rhs_i]);
-                    rhs_i += 1;
-                }
-                else if rhs_i == rhs_row_end {
-                    col_idx.push(self.col_idx[lhs_i]);
-                    val.push(self.val[lhs_i]);
-                    lhs_i += 1;
-                }
-                else {
-                    let lhs_col = self.col_idx[lhs_i];
-                    let rhs_col = other.col_idx[rhs_i];
-
-                    if lhs_col == rhs_col {
-                        val.push(self.val[lhs_i] + other.val[rhs_i]);
-                        col_idx.push(lhs_col);
-                        lhs_i += 1;
-                        rhs_i += 1;
-                    }
-                    else if lhs_col < rhs_col {
-                        val.push(self.val[lhs_i]);
-                        col_idx.push(lhs_col);
-                        lhs_i += 1;
-                    }
-                    else if lhs_col > rhs_col {
-                        val.push(other.val[rhs_i]);
-                        col_idx.push(rhs_col);
-                        rhs_i += 1;
-                    }
-
-                }
-            }
-            row_ptr.push(val.len());
-        }
-
-        Ok(CSR {
-            n_rows: self.n_rows,
-            n_cols: self.n_cols,
-            n_nz: val.len(),
-            row_ptr,
-            col_idx,
-            val
-        })
-    }
-}
-
-fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
     use serde::Deserialize;
     #[derive(Debug, Deserialize)]
     struct Row {
@@ -311,7 +97,6 @@ fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
     let mut reader = ReaderBuilder::new().has_headers(true).from_path(path)?;
 
     let mut tags = Tags::new();
-    // let mut co_counts: FxHashMap<(usize, usize), f32> = FxHashMap::default();
 
     let read_start = Instant::now();
 
@@ -330,17 +115,21 @@ fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
         n_posts += 1;
     }
 
+    println!("Read {} posts", n_posts);
+    println!("Read {} tags", tags.len());
+    // println!("mammal: {:#?}", tags.get_idx("mammal").unwrap());
+    // println!("domestic cat: {:#?}", tags.get_idx("domestic_cat").unwrap());
+
     let n_tags = tags.len();
     let mut handles = Vec::new();
-    for chunk in posts_tag_idxs.chunks((n_posts / 8) + 1) {
+    for chunk in posts_tag_idxs.chunks((n_posts / N_CHUNCK) + 1) {
         let chunk = chunk.to_vec();
-        let handle = thread::spawn( move || {
+        let handle = thread::spawn(move || {
             let mut co_counts: FxHashMap<(usize, usize), f32> = FxHashMap::default();
 
             for post_tag_idx in chunk {
-
                 for i in 0..post_tag_idx.len() {
-                    for j in (i+1)..post_tag_idx.len() {
+                    for j in (i + 1)..post_tag_idx.len() {
                         let a = post_tag_idx[i] as usize;
                         let b = post_tag_idx[j] as usize;
                         *co_counts.entry((a, b)).or_insert(0.0) += 1.0;
@@ -358,29 +147,66 @@ fn read_csv(path: &str) -> Result<(Tags, CSR), Box<dyn Error>> {
     let mut co_count_matrix = CSR::new(n_tags, n_tags);
     for (i, handle) in handles.into_iter().enumerate() {
         let slice = handle.join().unwrap();
+        println!("summing slice {} of {N_CHUNCK}", i + 1);
         co_count_matrix.add_in_place(&slice)?;
     }
-
 
     let elapsed = read_start.elapsed();
     println!("reading took {:?}", elapsed);
 
-    println!("mammal: {:#?}", tags.get_idx("mammal").unwrap());
-    println!("cat: {:#?}", tags.get_idx("cat").unwrap());
+    Ok((n_posts, tags, co_count_matrix))
+}
 
-    Ok((tags, co_count_matrix))
+fn calculate_npmi(n_posts: usize, tags: &Tags, co_count_matrix: &CSR) -> CSR {
+    let mut npmi_triple: Vec<(usize, usize, f32)> = Vec::new();
+    let post_freq = 1.0 / n_posts as f32;
+    for (row, col, val) in co_count_matrix {
+    //     let p_x: f32;
+    //     match tags.get_count_idx(row as u32) {
+    //         Some(count) => {
+    //             p_x = count as f32 * post_freq;
+    //         }
+    //         None => {
+    //             panic!("row {row} col {col} val {val}");
+    //         }
+    //     }
+    //     let p_y: f32;
+    //     match tags.get_count_idx(row as u32) {
+    //         Some(count) => {
+    //             p_y = count as f32 * post_freq;
+    //         }
+    //         None => {
+    //             panic!("row {row} col {col} val {val}");
+    //         }
+    //     }
+    //     let p_xy = val as f32 * post_freq;
+    //     let npmi_xy = (p_xy.log2() - p_x.log2() - p_y.log2()) / -p_xy.log2();
+    //     if npmi_xy > 0.0 {
+    //         npmi_triple.push((row, col, npmi_xy));
+    //     }
+        println!("row: {:?}, col: {:?}, val: {val}", row, col);
+    }
+    // let npmi_matrix = CSR::from_triplet(&npmi_triple, tags.len(), tags.len());
+    // npmi_matrix
+    CSR::new(3, 3)
 }
 
 fn main() {
-    let result = read_csv("lib/posts.csv");
+    let result = read_csv("data/posts_egs.csv");
     match result {
         Err(e) => println!("Error: {:?}", e),
-        Ok((_, co_count_matrix)) => {
-            println!("{:?}", co_count_matrix.value(2, 0));
-            println!("{:?}", co_count_matrix.value(0, 2));
-            println!("{:?}", co_count_matrix.n_nz);
-            println!("{:?}", co_count_matrix.size());
+        Ok((n_posts, tags, co_count_matrix)) => {
+            // let cat_idx = tags.get_idx("domestic_cat").unwrap() as usize;
+            // let mammal_idx = tags.get_idx("mammal").unwrap() as usize;
+            // println!("{:?}", co_count_matrix.value(cat_idx, mammal_idx));
+            // println!("{:?}", co_count_matrix.value(mammal_idx, cat_idx));
+            println!(
+                "size: {:.2} GB",
+                co_count_matrix.size() as f32 / 1_000_000_000.0
+            );
+
+            let npmi = calculate_npmi(n_posts, &tags, &co_count_matrix);
+            println!("npmi: {:?}", npmi);
         }
     }
-
 }
