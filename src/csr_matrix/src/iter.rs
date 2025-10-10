@@ -8,7 +8,7 @@ pub struct CSRIter<'a> {
 
 impl CSR {
     pub fn iter(&self) -> CSRIter {
-        CSRIter{
+        CSRIter {
             csr: self,
             row: 0,
             idx: 0,
@@ -17,7 +17,6 @@ impl CSR {
 }
 
 impl<'a> Iterator for CSRIter<'a> {
-
     type Item = (usize, usize, f32);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -25,8 +24,7 @@ impl<'a> Iterator for CSRIter<'a> {
             return None;
         }
 
-        while self.row + 1 < self.csr.row_ptr.len()
-            && self.idx + 1 >= self.csr.row_ptr[self.row + 1] {
+        while self.idx >= self.csr.row_ptr[self.row + 1] {
             self.row += 1;
         }
 
@@ -39,7 +37,7 @@ impl<'a> Iterator for CSRIter<'a> {
     }
 }
 
-impl <'a> IntoIterator for &'a CSR {
+impl<'a> IntoIterator for &'a CSR {
     type Item = (usize, usize, f32);
     type IntoIter = CSRIter<'a>;
     fn into_iter(self) -> Self::IntoIter {
