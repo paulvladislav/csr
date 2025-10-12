@@ -1,16 +1,16 @@
-use crate::*;
 use crate::tags::Tags;
+use crate::*;
 
 use bincode;
+use bincode::config::Config;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use bincode::config::Config;
 
 #[derive(Serialize, Deserialize)]
 struct SerializedData {
     n_posts: usize,
     tags: Box<Tags>,
-    csr: Box<CSR>
+    csr: Box<CSR>,
 }
 
 pub fn read_posts(path: &str) -> Result<(usize, Tags, Vec<Vec<u32>>), Box<dyn Error>> {
@@ -44,10 +44,10 @@ pub fn read_posts(path: &str) -> Result<(usize, Tags, Vec<Vec<u32>>), Box<dyn Er
 
 pub fn write_data(path: &str, n_posts: usize, tags: &Tags, npmi_matrix: &CSR) {
     let cfg = bincode::config::standard();
-    let s = SerializedData{
+    let s = SerializedData {
         n_posts,
         tags: Box::new(tags.clone()),
-        csr: Box::new(npmi_matrix.clone())
+        csr: Box::new(npmi_matrix.clone()),
     };
     let encoded = bincode::serde::encode_to_vec(s, cfg).unwrap();
 

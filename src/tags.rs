@@ -1,8 +1,8 @@
+use rustc_hash::FxHashMap;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::rc::Rc;
-use rustc_hash::FxHashMap;
-use serde::{Serialize, Deserialize, Serializer, Deserializer};
-use serde::ser::SerializeStruct;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TagData {
@@ -85,13 +85,10 @@ impl Serialize for Tags {
     {
         let mut ser_tags = serializer.serialize_struct("Tags", 2)?;
 
-        let tag_ser_ser: FxHashMap<&str, &TagData> = self.tag_set.iter()
-            .map(|(k, v)| (&**k, v))
-            .collect();
+        let tag_ser_ser: FxHashMap<&str, &TagData> =
+            self.tag_set.iter().map(|(k, v)| (&**k, v)).collect();
 
-        let vec_ser : Vec<&str> = self.vec.iter()
-            .map(|v| &**v)
-            .collect();
+        let vec_ser: Vec<&str> = self.vec.iter().map(|v| &**v).collect();
 
         ser_tags.serialize_field("tag_set", &tag_ser_ser)?;
         ser_tags.serialize_field("vec", &vec_ser)?;
@@ -107,7 +104,7 @@ impl<'de> Deserialize<'de> for Tags {
         #[derive(Deserialize)]
         struct Helper {
             tag_set: FxHashMap<String, TagData>,
-            vec: Vec<String>
+            vec: Vec<String>,
         }
 
         let helper = Helper::deserialize(deserializer)?;
@@ -120,9 +117,6 @@ impl<'de> Deserialize<'de> for Tags {
             tag_set.insert(Rc::clone(&tag), tag_data);
         }
 
-        Ok(Tags{
-            tag_set,
-            vec
-        })
+        Ok(Tags { tag_set, vec })
     }
 }

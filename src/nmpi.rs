@@ -1,4 +1,3 @@
-
 use csr_matrix::CSR;
 use rustc_hash::FxHashMap;
 use std::error::Error;
@@ -12,11 +11,6 @@ pub fn get_co_counts(
     posts_tag_idxs: Vec<Vec<u32>>,
 ) -> Result<(CSR), Box<dyn Error>> {
     const N_CHUNCK: usize = 12;
-
-    println!("Read {} posts", n_posts);
-    println!("Read {} tags", tags.len());
-    // println!("mammal: {:#?}", tags.get_idx("mammal").unwrap());
-    // println!("domestic cat: {:#?}", tags.get_idx("domestic_cat").unwrap());
 
     let n_tags = tags.len();
     let mut handles = Vec::new();
@@ -45,7 +39,6 @@ pub fn get_co_counts(
     let mut co_count_matrix = CSR::new(n_tags, n_tags);
     for (i, handle) in handles.into_iter().enumerate() {
         let slice = handle.join().unwrap();
-        println!("summing slice {} of {N_CHUNCK}", i + 1);
         co_count_matrix.add_in_place(&slice)?;
     }
 
