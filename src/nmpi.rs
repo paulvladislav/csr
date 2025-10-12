@@ -46,17 +46,26 @@ pub fn get_co_counts(
 }
 
 pub fn calculate_npmi(n_posts: usize, tags: &Tags, co_count_matrix: &CSR) -> CSR {
-    let mut npmi_triple: Vec<(usize, usize, f32)> = Vec::new();
+    let mut npmi_triple: Vec<(usize, usize, f32)> = Vec::with_capacity(co_count_matrix.n_nz);
     let post_freq = 1.0 / n_posts as f32;
+    
+    let mut probabilities = Vec::with_capacity(tags.len());
+    for i in 0..tags.len() {
+        let p = tags.get_count_idx(i as u32)
+            .unwrap()
+            as f32 * post_freq;
+        probabilities.push(p);
+    }
+    
     for (row, col, val) in co_count_matrix {
-        let p_x = tags.get_count_idx(row as u32).unwrap() as f32 * post_freq;
-        let p_y = tags.get_count_idx(row as u32).unwrap() as f32 * post_freq;
-        let p_xy = val as f32 * post_freq;
+        let p_x = probabilities[row];
+        let p_y = probabilities[col];
+        let p_xy = val  * post_freq;
         let npmi_xy = (p_xy.log2() - p_x.log2() - p_y.log2()) / -p_xy.log2();
         if npmi_xy > 0.0 {
             npmi_triple.push((row, col, npmi_xy));
         }
     }
-    let npmi_matrix = CSR::from_triplet(&npmi_triple, tags.len(), tags.len());
-    npmi_matrix
+    
+    CSR::from_triplet(&npmi_triple, tags.len(), tags.len())
 }
