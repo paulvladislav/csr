@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CSR {
     pub n_rows: usize,
     pub n_cols: usize,

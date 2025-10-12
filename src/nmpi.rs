@@ -1,8 +1,10 @@
-use crate::Tags;
+
 use csr_matrix::CSR;
 use rustc_hash::FxHashMap;
 use std::error::Error;
 use std::thread;
+
+use crate::tags::Tags;
 
 pub fn get_co_counts(
     n_posts: usize,
