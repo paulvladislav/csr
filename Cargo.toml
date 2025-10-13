@@ -12,3 +12,4 @@ rustc-hash = "2.1.1"
 csr_matrix = {path = "src/csr_matrix"}
 log = "0.4.28"
 bincode = {version =  "2.0.1", features = ["serde"] }
+rand = { version = "0.10.0-rc.0"}

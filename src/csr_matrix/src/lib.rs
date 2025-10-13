@@ -121,6 +121,22 @@ impl CSR {
         Some(0.0)
     }
 
+    pub fn get_row(&self, row: usize) -> Option<Vec<f32>> {
+        if row > self.n_rows {
+            return None;
+        }
+        
+        let row_start = self.row_ptr[row];
+        let row_end = self.row_ptr[row + 1];
+        
+        let mut row = vec![0.0; self.n_cols];
+        for i in row_start..row_end{
+            row[self.col_idx[i]] = self.val[i];
+        } 
+        
+        Some(row)
+    }
+
     pub fn insert(&mut self, row: usize, col: usize, val: f32) {
         todo!()
     }

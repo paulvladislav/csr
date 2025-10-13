@@ -2,7 +2,8 @@ use csr_matrix::CSR;
 use rustc_hash::FxHashMap;
 use std::error::Error;
 use std::thread;
-
+use bincode::decode_from_reader;
+use itertools::Itertools;
 use crate::tags::Tags;
 
 pub fn get_co_counts(
@@ -68,4 +69,37 @@ pub fn calculate_npmi(n_posts: usize, tags: &Tags, co_count_matrix: &CSR) -> CSR
     }
     
     CSR::from_triplet(&npmi_triple, tags.len(), tags.len())
+}
+
+pub fn get_most_related_tags(
+    n_tags: usize,
+    npmi_matrix: &CSR,
+    tag_idxs: Vec<u32>
+    ) -> Vec<(u32, f32)> {
+    let mut scores: Vec<f32> = vec![0.0; npmi_matrix.n_cols];
+    let mut counts: Vec<u32> = vec![0; npmi_matrix.n_cols];
+
+    for tag_idx in tag_idxs {
+        let related_tags = npmi_matrix.get_row(tag_idx as usize).unwrap();
+        for (rel_tag_idx, npmi_score) in related_tags.iter().enumerate() {
+            if *npmi_score != 0.0 {
+                counts[rel_tag_idx] += 1;
+                scores[rel_tag_idx] += npmi_score;
+            }
+        }
+    }
+
+    for i in 0..npmi_matrix.n_cols {
+        if counts[i] != 0 {
+        scores[i] /= counts[i] as f32;
+        }
+    }
+
+    scores.iter()
+        .enumerate()
+        .sorted_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .map(|(i, s)| (i as u32, *s))
+        .filter(|(i ,s)| *s > 0.0f32)
+        .take(n_tags)
+        .collect()
 }
