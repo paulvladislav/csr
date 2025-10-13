@@ -6,7 +6,7 @@ use bincode::decode_from_reader;
 use itertools::Itertools;
 use crate::tags::Tags;
 
-pub fn get_co_counts(
+pub fn get_co_count_matrix(
     n_posts: usize,
     tags: &Tags,
     posts_tag_idxs: Vec<Vec<u32>>,
@@ -46,7 +46,11 @@ pub fn get_co_counts(
     Ok(co_count_matrix)
 }
 
-pub fn calculate_npmi(n_posts: usize, tags: &Tags, co_count_matrix: &CSR) -> CSR {
+pub fn get_npmi_matrix(
+    n_posts: usize, 
+    tags: &Tags, 
+    co_count_matrix: &CSR
+) -> CSR {
     let mut npmi_triple: Vec<(usize, usize, f32)> = Vec::with_capacity(co_count_matrix.n_nz);
     let post_freq = 1.0 / n_posts as f32;
     
@@ -79,12 +83,11 @@ pub fn get_most_related_tags(
     let mut scores: Vec<f32> = vec![0.0; npmi_matrix.n_cols];
     let mut counts: Vec<u32> = vec![0; npmi_matrix.n_cols];
 
-    for tag_idx in tag_idxs {
-        let related_tags = npmi_matrix.get_row(tag_idx as usize).unwrap();
-        for (rel_tag_idx, npmi_score) in related_tags.iter().enumerate() {
-            if *npmi_score != 0.0 {
+    for tag_idx in &tag_idxs {
+        for (rel_tag_idx, rel_score) in npmi_matrix.inter_row(*tag_idx as usize) {
+            if !tag_idxs.contains(&(rel_tag_idx as u32)) {
                 counts[rel_tag_idx] += 1;
-                scores[rel_tag_idx] += npmi_score;
+                scores[rel_tag_idx] += rel_score;
             }
         }
     }
