@@ -1,3 +1,5 @@
+use std::arch::x86_64::_mm256_min_pd;
+use std::cmp::Ordering::Greater;
 use csr_matrix::CSR;
 use rustc_hash::FxHashMap;
 use std::error::Error;
@@ -6,7 +8,7 @@ use bincode::decode_from_reader;
 use itertools::Itertools;
 use crate::tags::Tags;
 
-pub fn get_co_count_matrix(
+pub fn   get_co_count_matrix(
     n_posts: usize,
     tags: &Tags,
     posts_tag_idxs: Vec<Vec<u32>>,
@@ -46,17 +48,32 @@ pub fn get_co_count_matrix(
     Ok(co_count_matrix)
 }
 
+pub fn get_npmi(tag_a: &str, tag_b: &str, n_posts: u32, co_cout_matrix: &CSR, tags: &Tags) -> f32 {
+    let p_a  = tags.get_count(tag_a).unwrap() as f32 / n_posts as f32;
+    let p_b  = tags.get_count(tag_b).unwrap() as f32 / n_posts as f32;
+    let p_ab = co_cout_matrix.value(
+            tags.get_idx(tag_a).unwrap(),
+            tags.get_idx(tag_b).unwrap()
+        )
+        .unwrap()
+        / n_posts as f32;
+
+
+
+    (p_ab / (p_a * p_b)).log2() / -p_ab.log2()
+}
+
 pub fn get_npmi_matrix(
     n_posts: usize, 
     tags: &Tags, 
     co_count_matrix: &CSR
 ) -> CSR {
-    let mut npmi_triple: Vec<(usize, usize, f32)> = Vec::with_capacity(co_count_matrix.n_nz);
+    let mut npmi_triples: Vec<(usize, usize, f32)> = Vec::with_capacity(co_count_matrix.n_nz);
     let post_freq = 1.0 / n_posts as f32;
     
     let mut probabilities = Vec::with_capacity(tags.len());
     for i in 0..tags.len() {
-        let p = tags.get_count_idx(i as u32)
+        let p = tags.get_count_idx(i)
             .unwrap()
             as f32 * post_freq;
         probabilities.push(p);
@@ -66,13 +83,13 @@ pub fn get_npmi_matrix(
         let p_x = probabilities[row];
         let p_y = probabilities[col];
         let p_xy = val  * post_freq;
-        let npmi_xy = (p_xy.log2() - p_x.log2() - p_y.log2()) / -p_xy.log2();
+        let npmi_xy = (p_xy.log2() / (p_x.log2() * p_y.log2())) / -p_xy.log2();
         if npmi_xy > 0.0 {
-            npmi_triple.push((row, col, npmi_xy));
+            npmi_triples.push((row, col, npmi_xy));
         }
     }
     
-    CSR::from_triplet(&npmi_triple, tags.len(), tags.len())
+    CSR::from_triples(&npmi_triples, tags.len(), tags.len())
 }
 
 pub fn get_most_related_tags(
@@ -98,11 +115,16 @@ pub fn get_most_related_tags(
         }
     }
 
-    scores.iter()
+    scores.into_iter()
         .enumerate()
-        .sorted_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-        .map(|(i, s)| (i as u32, *s))
         .filter(|(i ,s)| *s > 0.0f32)
+        .sorted_by(|a, b| {
+            let s_a = a.1;
+            let s_b = b.1;
+            s_a.total_cmp(&s_b)
+        })
+        .rev()
+        .map(|(i, s)| (i as u32, s))
         .take(n_tags)
         .collect()
 }

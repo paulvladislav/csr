@@ -27,7 +27,7 @@ impl CSR {
         }
     }
 
-    pub fn from_triplet(triplets: &Vec<(usize, usize, f32)>, n_rows: usize, n_cols: usize) -> CSR {
+    pub fn from_triples(triplets: &Vec<(usize, usize, f32)>, n_rows: usize, n_cols: usize) -> CSR {
         let mut rows: Vec<Vec<(usize, f32)>> = vec![vec![]; n_rows];
         for (r, c, v) in triplets {
             rows[*r].push((*c, *v));

@@ -96,6 +96,7 @@ impl Serialize for TagData {
     }
 }
 
+
 impl<'de> Deserialize<'de> for TagData {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -115,6 +116,12 @@ impl<'de> Deserialize<'de> for TagData {
     }
 }
 
+#[derive(Deserialize)]
+struct SerializedTagsHelper {
+    vec: Vec<TagData>,
+    tag_set: FxHashMap<String, usize>
+}
+
 impl Serialize for Tags {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -123,17 +130,17 @@ impl Serialize for Tags {
         let mut ser_tags =
             serializer.serialize_struct("Tags", 2)?;
 
-        let tag_set_ser: FxHashMap<&str, usize> = self.tag_set.iter()
-            .map(|(k, v)| (&**k, *v))
-            .collect();
+        let ser_helper = SerializedTagsHelper {
+            vec: self.vec.iter()
+                .map(|td| td.clone())
+                .collect(),
+            tag_set: self.tag_set.iter()
+              .map(|(k, v)| (String::from(&**k), *v))
+              .collect(),
+        };
 
-        let vec_ser: Vec<TagData> = self.vec.iter()
-            .map(|td| td.clone())
-            .collect();
-
-
-        ser_tags.serialize_field("tag_set", &tag_set_ser)?;
-        ser_tags.serialize_field("vec", &vec_ser)?;
+        ser_tags.serialize_field("vec", &ser_helper.vec)?;
+        ser_tags.serialize_field("tag_set", &ser_helper.tag_set)?;
         ser_tags.end()
     }
 }
@@ -143,13 +150,7 @@ impl<'de> Deserialize<'de> for Tags {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct Helper {
-            tag_set: FxHashMap<String, usize>,
-            vec: Vec<TagData>,
-        }
-
-        let helper = Helper::deserialize(deserializer)?;
+        let helper = SerializedTagsHelper::deserialize(deserializer)?;
         let mut tag_set: FxHashMap<Rc<str>, usize> = FxHashMap::default();
         for (idx, tag) in helper.vec.iter().enumerate() {
             let tag: Rc<str> = Rc::clone(&helper.vec[idx].name);

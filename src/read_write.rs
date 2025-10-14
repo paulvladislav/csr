@@ -31,7 +31,7 @@ pub fn read_posts(path: &str) -> Result<(usize, Tags, Vec<Vec<u32>>), Box<dyn Er
         let tag_idxs: Vec<u32> = row
             .tag_string
             .split_whitespace()
-            .map(|tag| tags.add_or_increment(tag))
+            .map(|tag| tags.add_or_increment(tag) as u32)
             .collect();
 
         posts_tag_idxs.push(tag_idxs);
