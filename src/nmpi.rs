@@ -22,11 +22,11 @@ pub fn   get_co_count_matrix(
         let handle = thread::spawn(move || {
             let mut co_counts: FxHashMap<(usize, usize), f32> = FxHashMap::default();
 
-            for post_tag_idx in chunk {
-                for i in 0..post_tag_idx.len() {
-                    for j in (i + 1)..post_tag_idx.len() {
-                        let a = post_tag_idx[i] as usize;
-                        let b = post_tag_idx[j] as usize;
+            for post_tag_idxs in chunk {
+                for i in 0..post_tag_idxs.len() {
+                    for j in (i + 1)..post_tag_idxs.len() {
+                        let a = post_tag_idxs[i] as usize;
+                        let b = post_tag_idxs[j] as usize;
                         *co_counts.entry((a, b)).or_insert(0.0) += 1.0;
                         *co_counts.entry((b, a)).or_insert(0.0) += 1.0;
                     }
@@ -49,18 +49,13 @@ pub fn   get_co_count_matrix(
 }
 
 pub fn get_npmi(tag_a: &str, tag_b: &str, n_posts: u32, co_cout_matrix: &CSR, tags: &Tags) -> f32 {
+    let idx_a = tags.get_idx(tag_a).unwrap();
+    let idx_b = tags.get_idx(tag_b).unwrap();
     let p_a  = tags.get_count(tag_a).unwrap() as f32 / n_posts as f32;
-    let p_b  = tags.get_count(tag_b).unwrap() as f32 / n_posts as f32;
-    let p_ab = co_cout_matrix.value(
-            tags.get_idx(tag_a).unwrap(),
-            tags.get_idx(tag_b).unwrap()
-        )
-        .unwrap()
-        / n_posts as f32;
+    let p_b  =tags.get_count(tag_b).unwrap() as f32 / n_posts as f32;
+    let p_ab = co_cout_matrix.value(idx_a, idx_b).unwrap() / n_posts as f32;
 
-
-
-    (p_ab / (p_a * p_b)).log2() / -p_ab.log2()
+    (p_ab.log2() - p_a.log2() - p_b.log2()) / -p_ab.log2()
 }
 
 pub fn get_npmi_matrix(
@@ -83,7 +78,7 @@ pub fn get_npmi_matrix(
         let p_x = probabilities[row];
         let p_y = probabilities[col];
         let p_xy = val  * post_freq;
-        let npmi_xy = (p_xy.log2() / (p_x.log2() * p_y.log2())) / -p_xy.log2();
+        let npmi_xy = (p_xy / (p_x * p_y) ).log2() / -p_xy.log2();
         if npmi_xy > 0.0 {
             npmi_triples.push((row, col, npmi_xy));
         }
